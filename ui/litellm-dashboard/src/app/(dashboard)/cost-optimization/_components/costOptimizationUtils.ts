@@ -3,8 +3,11 @@ import { ToolSpendDailyEntry, ToolSpendEntry } from "@/components/networking";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 
 export const usd = (value: number): string => {
-  const decimals = value > 0 && value < 1 ? 4 : 2;
-  return `$${formatNumberWithCommas(value, decimals)}`;
+  // Sized and signed off the magnitude: a driver can come out negative, and a small
+  // loss rendered at two decimals would read as "$-0.00"
+  const magnitude = Math.abs(value);
+  const decimals = magnitude > 0 && magnitude < 1 ? 4 : 2;
+  return `${value < 0 ? "-" : ""}$${formatNumberWithCommas(magnitude, decimals)}`;
 };
 
 export const pct = (ratio: number): string => `${formatNumberWithCommas(ratio * 100, 1)}%`;
@@ -161,9 +164,10 @@ export type SavingsPoint = {
   date: string;
   Compression: number;
   "Prompt caching": number;
+  "Auto-router": number;
 };
 
-export const SAVINGS_SERIES = ["Compression", "Prompt caching"] as const;
+export const SAVINGS_SERIES = ["Compression", "Prompt caching", "Auto-router"] as const;
 
 /**
  * Running total of each series across the selected window. The total restarts
@@ -179,6 +183,7 @@ export const toCumulative = (points: readonly SavingsPoint[]): SavingsPoint[] =>
         date: point.date,
         Compression: (previous?.Compression ?? 0) + point.Compression,
         "Prompt caching": (previous?.["Prompt caching"] ?? 0) + point["Prompt caching"],
+        "Auto-router": (previous?.["Auto-router"] ?? 0) + point["Auto-router"],
       },
     ];
   }, []);
@@ -193,7 +198,7 @@ export const toCumulative = (points: readonly SavingsPoint[]): SavingsPoint[] =>
 export const withStartAnchor = (cumulative: readonly SavingsPoint[], startLabel: string): SavingsPoint[] =>
   cumulative.length === 0
     ? [...cumulative]
-    : [{ date: startLabel, Compression: 0, "Prompt caching": 0 }, ...cumulative];
+    : [{ date: startLabel, Compression: 0, "Prompt caching": 0, "Auto-router": 0 }, ...cumulative];
 
 /** "Jul 16 – Jul 23", collapsing to a single date when the range is one day. */
 export const formatRangeLabel = (from: Date | undefined, to: Date | undefined): string => {

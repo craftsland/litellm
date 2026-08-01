@@ -75,6 +75,9 @@ from litellm.constants import (
     OPENAI_EMBEDDING_PARAMS,
     TOOL_CHOICE_OBJECT_TOKEN_COUNT,
 )
+from litellm.litellm_core_utils import (
+    get_model_cost_map as _model_cost_map_module,
+)
 from litellm.litellm_core_utils.fallback_generalizations import (
     match_capability_generalizations,
 )
@@ -2663,7 +2666,59 @@ def _get_builtin_model_info_for_registration(model: str) -> ModelInfo | None:
     return None
 
 
-def register_model(model_cost: str | dict):
+_runtime_registered_model_cost: dict[str, dict[str, object]] = {}  # mutable-ok: replayed on reload
+
+
+def refresh_model_cost_map(url: str) -> int:
+    """Refresh ``litellm.model_cost`` from the cost map hosted at ``url``.
+
+    The refresh replaces the whole catalog, which on its own discards every
+    durable runtime registration: the deployment ``model_info`` the Router
+    registers from ``model_list``, and pricing overrides passed to
+    ``register_model``. Those are re-applied on top of the freshly fetched
+    catalog so a price-data reload only updates pricing rather than erasing
+    operator-supplied model metadata. Request-scoped registrations are not
+    replayed, so a one-off per-request price never outlives the catalog it was
+    applied to.
+
+    Returns how many models the freshly fetched catalog carried, counted before
+    the replay so it describes the price data alone.
+    """
+    new_model_cost_map = _model_cost_map_module.get_model_cost_map(url=url)
+    litellm.model_cost = new_model_cost_map
+    _invalidate_model_cost_lowercase_map()
+    litellm.add_known_models(model_cost_map=new_model_cost_map)
+    fetched_model_count = len(new_model_cost_map)
+    if _runtime_registered_model_cost:
+        register_model(model_cost=dict(_runtime_registered_model_cost))  # mutable-ok: snapshot, replay rewrites it
+    return fetched_model_count
+
+
+def unregister_model(keys: Iterable[str], *, drop_from_model_cost: bool = False) -> None:
+    """Withdraw runtime registrations recorded under ``keys``.
+
+    Dropping a key from the replay registry is always safe: it only stops a
+    registration being re-asserted over future catalogs, which is what a
+    registration whose owner is gone should do. Dropping it from
+    ``litellm.model_cost`` is not, because that dict merges catalog pricing with
+    runtime registrations under no provenance, so a key the caller shares with
+    the catalog (``gemini/gemini-2.5-pro``) or with another live registration
+    would take real pricing down with it. Pass ``drop_from_model_cost`` only for
+    a key the caller owns outright, such as a router deployment id.
+    """
+    registered_keys = tuple(keys)
+    for key in registered_keys:
+        _runtime_registered_model_cost.pop(key, None)
+    if not drop_from_model_cost:
+        return
+    owned_keys = tuple(key for key in registered_keys if key in litellm.model_cost)
+    for key in owned_keys:
+        del litellm.model_cost[key]
+    if owned_keys:
+        _invalidate_model_cost_lowercase_map()
+
+
+def register_model(model_cost: str | dict, *, persist_across_reloads: bool = True):
     """
     Register new / Override existing models (and their pricing) to specific providers.
     Provide EITHER a model cost dictionary or a url to a hosted json blob
@@ -2677,6 +2732,12 @@ def register_model(model_cost: str | dict):
             "mode": "chat"
         },
     }
+
+    ``persist_across_reloads`` controls whether the registration is replayed
+    when the cost map is refreshed. It defaults to True because a caller
+    registering a model is declaring durable intent. Pass False for a
+    registration that only describes one request, so it is dropped rather than
+    re-asserted over every future catalog.
     """
 
     loaded_model_cost = {}
@@ -2685,6 +2746,11 @@ def register_model(model_cost: str | dict):
         loaded_model_cost = model_cost
     elif isinstance(model_cost, str):
         loaded_model_cost = litellm.get_model_cost_map(url=model_cost)
+
+    if persist_across_reloads:
+        _registrations: Mapping[str, Mapping[str, object]] = loaded_model_cost
+        for _registered_key, _registered_value in _registrations.items():
+            _runtime_registered_model_cost[_registered_key] = dict(_registered_value)  # mutable-ok: caller-owned
 
     # Providers that trigger side effects (e.g., OAuth flows) when get_model_info is called
     # Skip get_model_info for these providers during model registration

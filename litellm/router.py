@@ -218,6 +218,7 @@ from litellm.utils import (
     get_secret,
     get_utc_datetime,
     is_region_allowed,
+    unregister_model,
 )
 
 from .router_utils.pattern_match_deployments import PatternMatchRouter
@@ -7490,9 +7491,11 @@ class Router:
                 )
 
             ## OLD MODEL REGISTRATION ## Kept to prevent breaking changes
-            _model_name = deployment.litellm_params.model
-            if deployment.litellm_params.custom_llm_provider is not None:
-                _model_name = deployment.litellm_params.custom_llm_provider + "/" + _model_name
+            _backend_keys = Router._backend_cost_map_keys(
+                model=deployment.litellm_params.model,
+                custom_llm_provider=deployment.litellm_params.custom_llm_provider,
+            )
+            _model_name = _backend_keys[0]
 
             # For the shared backend key, keep only cost-map schema fields
             # (minus custom pricing) so that one deployment's pricing overrides
@@ -7527,11 +7530,7 @@ class Router:
                 _shared_model_info["mode"] = _existing_shared_mode
 
             # Always register the (possibly mode-preserved) shared backend info.
-            _backend_alias_cost = {_model_name: _shared_model_info}
-            if "responses/" in _model_name:
-                _stripped_model_name = _model_name.replace("responses/", "")
-                _backend_alias_cost[_stripped_model_name] = _shared_model_info
-            litellm.register_model(model_cost=_backend_alias_cost)
+            litellm.register_model(model_cost={_backend_key: _shared_model_info for _backend_key in _backend_keys})
 
             ## Check if LLM Deployment is allowed for this deployment
             if self.deployment_is_active_for_environment(deployment=deployment) is not True:
@@ -8239,9 +8238,10 @@ class Router:
 
         ## REGISTER MODEL INFO IN LITELLM MODEL COST MAP
         ## OLD MODEL REGISTRATION ## Kept to prevent breaking changes
-        _model_name = deployment.litellm_params.model
-        if deployment.litellm_params.custom_llm_provider is not None:
-            _model_name = deployment.litellm_params.custom_llm_provider + "/" + _model_name
+        _backend_keys = Router._backend_cost_map_keys(
+            model=deployment.litellm_params.model,
+            custom_llm_provider=deployment.litellm_params.custom_llm_provider,
+        )
 
         # For the shared backend key, keep only cost-map schema fields
         # (minus custom pricing) so that one deployment's pricing overrides
@@ -8250,11 +8250,7 @@ class Router:
         # name. Each deployment's full model_info is already stored under
         # its unique model_id above (when present).
         _shared_model_info = shared_backend_model_info(_model_info_dict)
-        _backend_alias_cost = {_model_name: _shared_model_info}
-        if "responses/" in _model_name:
-            _stripped_model_name = _model_name.replace("responses/", "")
-            _backend_alias_cost[_stripped_model_name] = _shared_model_info
-        litellm.register_model(model_cost=_backend_alias_cost)
+        litellm.register_model(model_cost={_backend_key: _shared_model_info for _backend_key in _backend_keys})
 
         # add to model names
         self._add_model_to_list_and_index_map(model=_deployment, model_id=deployment.model_info.id)
@@ -8409,10 +8405,15 @@ class Router:
                     removal_idx = deployment_fast_mapping[deployment_id]
 
                     if removal_idx is not None:
-                        self.model_list.pop(removal_idx)
+                        outgoing = self.model_list.pop(removal_idx)
                         self._invalidate_model_group_info_cache()
                         self._invalidate_access_groups_cache()
                         self._update_deployment_indices_after_removal(model_id=deployment_id, removal_idx=removal_idx)
+                        # Withdraw the outgoing registration before the re-add below writes the
+                        # new one, so an update that repoints the deployment at a different
+                        # backend model does not strand the old backend key in the registry.
+                        if deployment_id is not None:
+                            self._unregister_deployment_model_cost(model_id=deployment_id, deployment=outgoing)
 
                 # Free the outgoing deployment's pre-routing strategy slot (keyed by the
                 # OLD model_name/tags) before the re-add below re-registers it.
@@ -8442,6 +8443,53 @@ class Router:
             else:
                 raise e
 
+    @staticmethod
+    def _backend_cost_map_keys(model: str, custom_llm_provider: str | None) -> tuple[str, ...]:
+        """The ``litellm.model_cost`` keys a deployment's shared backend info is registered under.
+
+        Shared by the registration sites and by ``delete_deployment`` so a removal
+        withdraws exactly the keys the registration wrote.
+        """
+        backend_key = model if custom_llm_provider is None else f"{custom_llm_provider}/{model}"
+        if "responses/" in backend_key:
+            return (backend_key, backend_key.replace("responses/", ""))
+        return (backend_key,)
+
+    @staticmethod
+    def _deployment_backend_cost_map_keys(deployment: Mapping[str, object]) -> frozenset[str]:
+        litellm_params = deployment.get("litellm_params")
+        if not isinstance(litellm_params, Mapping):
+            return frozenset()
+        model = litellm_params.get("model")
+        if not isinstance(model, str):
+            return frozenset()
+        custom_llm_provider = litellm_params.get("custom_llm_provider")
+        return frozenset(
+            Router._backend_cost_map_keys(
+                model=model,
+                custom_llm_provider=custom_llm_provider if isinstance(custom_llm_provider, str) else None,
+            )
+        )
+
+    def _unregister_deployment_model_cost(self, model_id: str, deployment: Mapping[str, object]) -> None:
+        """Withdraw the cost-map registrations made on behalf of a deployment being removed.
+
+        Runtime registrations are replayed onto every price data reload, so
+        without this a deleted deployment is re-asserted for the life of the
+        process and the registry grows as models are created and deleted.
+
+        The model id keys an entry only this deployment ever wrote, so it is
+        dropped outright. A backend key is shared, since the catalog can define it
+        and other deployments can point at the same backend model, so it is only
+        withdrawn from the replay registry and only once no remaining deployment
+        registers under it.
+        """
+        unregister_model(keys=(model_id,), drop_from_model_cost=True)
+        still_registered = frozenset(
+            key for remaining in self.model_list for key in Router._deployment_backend_cost_map_keys(remaining)
+        )
+        unregister_model(keys=Router._deployment_backend_cost_map_keys(deployment) - still_registered)
+
     def delete_deployment(self, id: str) -> Deployment | None:
         """
         Parameters:
@@ -8465,6 +8513,7 @@ class Router:
                 _budget_limiter = self._get_router_deployment_budget_limiter()
                 if _budget_limiter is not None:
                     _budget_limiter.unregister_deployment_budget(model_id=id)
+                self._unregister_deployment_model_cost(model_id=id, deployment=item)
                 try:
                     self._unregister_pre_routing_strategy_for_deployment(
                         deployment=item if isinstance(item, Deployment) else Deployment(**item)
@@ -10212,8 +10261,8 @@ class Router:
                 base_model = _model_info.get("base_model", None)
                 if base_model is None:
                     base_model = _litellm_params.get("base_model", None)
-                model_info = self.get_router_model_info(deployment=deployment, received_model_name=model)
                 _deployment_model = base_model or _litellm_params.get("model", None)
+                model_info = self.get_router_model_info(deployment=deployment, received_model_name=model)
 
                 max_input_tokens = model_info.get("max_input_tokens") if isinstance(model_info, dict) else None
                 if isinstance(max_input_tokens, int) and has_countable_input:
@@ -10270,16 +10319,23 @@ class Router:
             ## INVALID PARAMS ## -> catch 'gpt-3.5-turbo-16k' not supporting 'response_format' param
             if request_kwargs is not None and litellm.drop_params is False:
                 # get supported params — use per-deployment model to avoid overwriting the outer model group name
-                _dep_model_for_params = _deployment_model or model
-                (
-                    _dep_model_for_params,
-                    custom_llm_provider,
-                    _,
-                    _,
-                ) = litellm.get_llm_provider(
-                    model=_dep_model_for_params,
-                    litellm_params=LiteLLM_Params(**_litellm_params),
-                )
+                _dep_model_for_params: str = _deployment_model or model
+                try:
+                    (
+                        _dep_model_for_params,
+                        custom_llm_provider,
+                        _,
+                        _,
+                    ) = litellm.get_llm_provider(
+                        model=_dep_model_for_params,
+                        litellm_params=LiteLLM_Params(**_litellm_params),
+                    )
+                except Exception as e:  # noqa: BLE001  # best-effort filter: an unresolvable provider must not fail the request
+                    verbose_router_logger.debug(
+                        f"litellm.router.py::_pre_call_checks: skipping supported-params check "
+                        f"for model={_dep_model_for_params}. Got - {e}"
+                    )
+                    continue
 
                 supported_openai_params = litellm.get_supported_openai_params(
                     model=_dep_model_for_params,

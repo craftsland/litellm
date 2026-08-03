@@ -1,0 +1,121 @@
+  - label: ":microscope: e2e — full suite"
+    key: e2e-run
+    depends_on: candidate
+    agents:
+      queue: "eks-stage"
+    timeout_in_minutes: 180
+    plugins:
+      - kubernetes:
+          podSpec:
+            nodeSelector:
+              karpenter.sh/nodepool: litellm-worker-t3
+            containers:
+              - image: 654278500801.dkr.ecr.us-east-1.amazonaws.com/litellm-e2e:1.0.0-main.20260803162759
+                command: ["/app/entrypoint.sh"]
+                args: ["-v"]
+                env:
+                - name: LITELLM_PROXY_URL
+                  value: http://internal-k8s-litellm-litellm-e7f4afb143-1355079179.us-east-1.elb.amazonaws.com
+                - name: LITELLM_MASTER_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: master-key
+                      name: litellm-master-key
+                - name: REQUIRE_PROXY
+                  value: '1'
+                - name: TEST_MODE
+                  value: full
+                - name: DRY_RUN_TEST_COUNT
+                  value: '3'
+                - name: E2E_POLL_TIMEOUT
+                  value: '120'
+                - name: E2E_POLL_INTERVAL
+                  value: '5'
+                - name: E2E_REQUEST_TIMEOUT
+                  value: '60'
+                - name: E2E_LOAD_DURATION_SECONDS
+                  value: '180'
+                - name: REDIS_HOST
+                  value: berrie-litellm-stage-ieib2i.serverless.use1.cache.amazonaws.com
+                - name: REDIS_PORT
+                  value: '6379'
+                - name: E2E_LOAD_USERS
+                  value: '100'
+                - name: E2E_LOAD_SPAWN_RATE
+                  value: '25'
+                - name: E2E_LOAD_MIN_RPS
+                  value: '50'
+                - name: E2E_OTEL_QUERY_URL
+                  value: http://jaeger.monitoring.svc.cluster.local:16686
+                - name: E2E_UI_ARTIFACT_DIR
+                  value: /tmp/playwright-artifacts
+                - name: PRESIDIO_ANALYZER_API_BASE
+                  valueFrom:
+                    secretKeyRef:
+                      key: PRESIDIO_ANALYZER_API_BASE
+                      name: litellm-provider-keys
+                - name: PRESIDIO_ANONYMIZER_API_BASE
+                  valueFrom:
+                    secretKeyRef:
+                      key: PRESIDIO_ANONYMIZER_API_BASE
+                      name: litellm-provider-keys
+                - name: LANGFUSE_PUBLIC_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: LANGFUSE_PUBLIC_KEY
+                      name: litellm-provider-keys
+                - name: LANGFUSE_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: LANGFUSE_SECRET_KEY
+                      name: litellm-provider-keys
+                - name: LANGFUSE_BASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      key: LANGFUSE_BASE_URL
+                      name: litellm-provider-keys
+                - name: DD_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: DD_API_KEY
+                      name: litellm-provider-keys
+                - name: DD_APP_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: DD_APP_KEY
+                      name: litellm-provider-keys
+                - name: DD_SITE
+                  valueFrom:
+                    secretKeyRef:
+                      key: DD_SITE
+                      name: litellm-provider-keys
+                - name: ANTHROPIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: ANTHROPIC_API_KEY
+                      name: litellm-provider-keys
+                - name: COHERE_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: COHERE_API_KEY
+                      name: litellm-provider-keys
+                - name: AWS_ROLE_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      key: AWS_ROLE_NAME
+                      name: litellm-provider-keys
+                - name: BEDROCK_GUARDRAIL_IDENTIFIER
+                  valueFrom:
+                    secretKeyRef:
+                      key: BEDROCK_GUARDRAIL_IDENTIFIER
+                      name: litellm-provider-keys
+                - name: BEDROCK_GUARDRAIL_VERSION
+                  valueFrom:
+                    secretKeyRef:
+                      key: BEDROCK_GUARDRAIL_VERSION
+                      name: litellm-provider-keys
+                - name: BUILDKITE_ANALYTICS_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      key: BUILDKITE_ANALYTICS_TOKEN
+                      name: litellm-provider-keys

@@ -19,13 +19,11 @@ const asKeywords = (value: unknown): string[] =>
     : [];
 
 /**
- * Drop the React-only id, trim keywords, and discard rules left empty. "Add keyword rule"
- * seeds a row with no keywords, and the backend validator rejects those with a 400.
+ * Drop the React-only id and trim keywords, leaving one entry per rule. A rule left empty stays
+ * empty rather than disappearing, so getKeywordTierRulesError can name the row it came from.
  */
 export const serializeKeywordTierRules = (rules: KeywordTierRule[]): StoredKeywordTierRule[] =>
-  rules
-    .map((rule) => ({ keywords: asKeywords(rule.keywords).filter(Boolean), tier: rule.tier }))
-    .filter((rule) => rule.keywords.length > 0);
+  rules.map((rule) => ({ keywords: asKeywords(rule.keywords).filter(Boolean), tier: rule.tier }));
 
 export const hydrateKeywordTierRules = (value: unknown): KeywordTierRule[] => {
   if (!Array.isArray(value)) return [];

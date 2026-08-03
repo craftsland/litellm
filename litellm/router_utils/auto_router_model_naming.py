@@ -62,12 +62,46 @@ def classify_strategy_router_model(model: str) -> StrategyRouterKind | None:
     return "semantic"
 
 
-def validate_strategy_router_model_write(model: str, present_fields: frozenset[str]) -> str | None:
+def validate_complexity_router_config_write(complexity_router_config: Mapping[str, object] | None) -> str | None:
+    """Reject a complexity config the router would refuse to build a deployment from.
+
+    Parsed with the router's own ``ComplexityRouterConfig`` rather than a copy of
+    its rules, so the boundary rejects exactly what the load would. Plugins are
+    resolved from dotted paths only on the config.yaml path, so a written config
+    reaches this function in the same shape the load hands to the same model.
+    Judged on the config alone: a patch may write one without naming a model, and
+    the stored model is encrypted at rest, so it cannot be classified here.
+    """
+    from pydantic import ValidationError
+
+    from litellm.router_strategy.complexity_router.config import ComplexityRouterConfig
+
+    if complexity_router_config is None:
+        return None
+    try:
+        _ = ComplexityRouterConfig.model_validate(complexity_router_config)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        location = ".".join(str(part) for part in first.get("loc", ())) or "complexity_router_config"
+        return (
+            f"complexity_router_config is invalid at {location}: {first.get('msg', 'invalid value')}. "
+            "The router would drop this deployment at load time, so the write is rejected instead."
+        )
+    return None
+
+
+def validate_strategy_router_model_write(
+    model: str,
+    present_fields: frozenset[str],
+    complexity_router_config: Mapping[str, object] | None,
+) -> str | None:
     """Check that writing ``model`` leaves a deployment the router can load.
 
     ``present_fields`` is the set of strategy-router param fields that are
     non-None on the deployment after the write (stored fields merged with the
-    incoming ones). Returns a human-readable violation, or None when coherent.
+    incoming ones). ``complexity_router_config`` is that deployment's merged
+    config, checked for content once the field-level shape holds. Returns a
+    human-readable violation, or None when coherent.
     """
     kind = classify_strategy_router_model(model)
     if kind is None:
@@ -99,4 +133,6 @@ def validate_strategy_router_model_write(model: str, present_fields: frozenset[s
             f"litellm_params.model='{model}' selects the {kind} router, which requires "
             f"{'; '.join(missing)} in litellm_params."
         )
-    return None
+    if kind != "complexity":
+        return None
+    return validate_complexity_router_config_write(complexity_router_config=complexity_router_config)

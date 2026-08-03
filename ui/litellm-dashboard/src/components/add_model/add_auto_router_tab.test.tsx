@@ -1,4 +1,4 @@
-import { renderWithProviders, screen, waitFor } from "../../../tests/test-utils";
+import { renderWithProviders, screen, waitFor, within } from "../../../tests/test-utils";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import AddAutoRouterTab from "./add_auto_router_tab";
@@ -95,6 +95,43 @@ describe("AddAutoRouterTab", () => {
 
     await waitFor(() => expect(handleAddAutoRouterSubmit).toHaveBeenCalled());
     expect(vi.mocked(handleAddAutoRouterSubmit).mock.calls.at(-1)?.[0]).toMatchObject({ team_id: "team-1" });
+  });
+
+  // LIT-5133: "Add keyword rule" seeds a row with no keywords, and the semantic toggle that used
+  // to be the only thing checking them is off by default. The row was dropped on the way to the
+  // payload, so the create succeeded and the caller's rule was gone with nothing said about it.
+  it("blocks the create when a keyword rule was added but left empty", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getMissingTiersError).mockReturnValue(null);
+
+    renderWithProviders(<Harness />);
+
+    await user.type(screen.getByPlaceholderText(/smart_router/i), "keyword-router");
+    await user.click(screen.getByText("Advanced: Keyword/Semantic Matching"));
+    await user.click(screen.getByRole("button", { name: /add keyword rule/i }));
+    await user.click(screen.getByRole("button", { name: /add auto router/i }));
+
+    expect(NotificationManager.fromBackend).toHaveBeenCalledWith("Add at least one keyword to keyword rule(s): 1");
+    expect(handleAddAutoRouterSubmit).not.toHaveBeenCalled();
+  });
+
+  it("creates the router once that keyword rule is filled in", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getMissingTiersError).mockReturnValue(null);
+
+    renderWithProviders(<Harness />);
+
+    await user.type(screen.getByPlaceholderText(/smart_router/i), "keyword-router");
+    await user.click(screen.getByText("Advanced: Keyword/Semantic Matching"));
+    await user.click(screen.getByRole("button", { name: /add keyword rule/i }));
+    const keywordsField = screen.getByText("Keywords 1").closest("div") as HTMLElement;
+    await user.type(within(keywordsField).getByRole("combobox"), "invoice{enter}");
+    await user.click(screen.getByRole("button", { name: /add auto router/i }));
+
+    await waitFor(() => expect(handleAddAutoRouterSubmit).toHaveBeenCalled());
+    expect(vi.mocked(handleAddAutoRouterSubmit).mock.calls.at(-1)?.[0]).toMatchObject({
+      complexity_router_config: { keyword_tier_rules: [{ keywords: ["invoice"], tier: "COMPLEX" }] },
+    });
   });
 
   it("blocks the submit when a team admin has not picked a team", async () => {

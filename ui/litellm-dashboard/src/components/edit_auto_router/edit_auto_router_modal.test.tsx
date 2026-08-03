@@ -118,6 +118,43 @@ describe("EditAutoRouterModal keyword matching", () => {
     await waitFor(() => expect(NotificationsManager.fromBackend).toHaveBeenCalled());
     expect(modelPatchUpdateCall).not.toHaveBeenCalled();
   });
+
+  // LIT-5133, edit side. Semantic matching is off here on purpose: it used to be the only thing
+  // that checked a rule for keywords, so with it on this save was already blocked and the test
+  // would pass without the fix. Off, the unfilled row was dropped and the save reported success.
+  it("blocks a save that adds a keyword rule and leaves it empty", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <EditAutoRouterModal
+        isVisible
+        onCancel={vi.fn()}
+        onSuccess={vi.fn()}
+        modelData={{
+          ...MODEL_DATA,
+          litellm_params: {
+            ...MODEL_DATA.litellm_params,
+            complexity_router_config: {
+              ...STORED_CONFIG,
+              semantic_keyword_matching: false,
+              embedding_model: undefined,
+            },
+          },
+        }}
+        accessToken="token"
+        userRole="Admin"
+      />,
+    );
+
+    await screen.findByText(/Escalation Keywords/i);
+    fireEvent.click(screen.getByText("Advanced: Keyword/Semantic Matching"));
+    await user.click(screen.getByRole("button", { name: /add keyword rule/i }));
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(NotificationsManager.fromBackend).toHaveBeenCalledWith("Add at least one keyword to keyword rule(s): 2"),
+    );
+    expect(modelPatchUpdateCall).not.toHaveBeenCalled();
+  });
 });
 
 describe("EditAutoRouterModal classifier context window", () => {

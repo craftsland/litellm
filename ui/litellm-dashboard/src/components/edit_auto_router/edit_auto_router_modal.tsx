@@ -6,7 +6,7 @@ import { fetchAvailableModels, ModelGroup } from "@/components/llm_calls/fetch_m
 import RouterConfigBuilder from "../add_model/RouterConfigBuilder";
 import { normalizeTierModels } from "../add_model/complexity_router_tiers";
 import { isComplexityRouter } from "../add_model/auto_router_strategies";
-import { getSemanticConfigError } from "../add_model/build_complexity_router_config";
+import { getKeywordTierRulesError, getSemanticConfigError } from "../add_model/build_complexity_router_config";
 import { KeywordTierRule } from "../add_model/KeywordTierRules";
 import { DEFAULT_MATCH_THRESHOLD } from "../add_model/SemanticKeywordMatching";
 import { hydrateKeywordTierRules, serializeKeywordTierRules } from "../add_model/complexity_router_keywords";
@@ -115,8 +115,8 @@ export const buildUpdatedComplexityRouterConfig = (
     }),
     ...(value.return_raw_model_name && { return_raw_model_name: true }),
     ...(keywordMatching && {
-      // Mirrors buildComplexityRouterConfig: rules only when non-empty (the backend rejects
-      // an empty rule with a 400), escalation keywords always, semantic trio only when on.
+      // Mirrors buildComplexityRouterConfig: the key only when there is a rule to write,
+      // escalation keywords always, semantic trio only when on.
       ...(storedKeywordRules.length > 0 && { keyword_tier_rules: storedKeywordRules }),
       escalation_keywords: keywordMatching.escalationKeywords.map((k) => k.trim()).filter(Boolean),
       ...(keywordMatching.semanticMatchingEnabled && {
@@ -295,15 +295,16 @@ const EditAutoRouterModal: React.FC<EditAutoRouterModalProps> = ({
           NotificationsManager.fromBackend("Please select a classifier model, or switch back to Heuristic");
           return;
         }
-        // Same guard the create form applies (add_auto_router_tab.tsx). The backend rejects
-        // semantic_keyword_matching without an embedding model or keyword rules
-        // (complexity_router/config.py), so without this a save fails as a raw 400 instead of
-        // an inline message.
+        // Same guards the create form applies (add_auto_router_tab.tsx). The backend rejects a
+        // keyword rule with no keyword, and semantic_keyword_matching without an embedding model
+        // or keyword rules (complexity_router/config.py), so without these a save fails as a raw
+        // 400 instead of an inline message.
+        const keywordRulesError = getKeywordTierRulesError(keywordTierRules);
+        if (keywordRulesError) {
+          NotificationsManager.fromBackend(keywordRulesError);
+          return;
+        }
 
-        // Same guard the create form applies (add_auto_router_tab.tsx). The backend rejects
-        // semantic_keyword_matching without an embedding model or keyword rules
-        // (complexity_router/config.py), so without this a save fails as a raw 400 instead of
-        // an inline message.
         const semanticError = getSemanticConfigError({ semanticMatchingEnabled, embeddingModel, keywordTierRules });
         if (semanticError) {
           NotificationsManager.fromBackend(semanticError);

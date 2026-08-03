@@ -17,6 +17,7 @@ import { DEFAULT_ESCALATION_KEYWORDS } from "./EscalationKeywords";
 import { DEFAULT_MATCH_THRESHOLD } from "./SemanticKeywordMatching";
 import {
   buildComplexityRouterConfig,
+  getKeywordTierRulesError,
   getMissingTiersError,
   getSemanticConfigError,
 } from "./build_complexity_router_config";
@@ -119,6 +120,13 @@ const AddAutoRouterTab: React.FC<AddAutoRouterTabProps> = ({
     if (classifierType === "llm" && !classifierLlmConfig?.model) {
       setShowValidationErrors(true);
       NotificationManager.fromBackend("Please select a classifier model, or switch back to Heuristic");
+      return;
+    }
+
+    const keywordRulesError = getKeywordTierRulesError(keywordTierRules);
+    if (keywordRulesError) {
+      setShowValidationErrors(true);
+      NotificationManager.fromBackend(keywordRulesError);
       return;
     }
 

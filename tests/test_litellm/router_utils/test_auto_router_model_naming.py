@@ -44,7 +44,9 @@ def test_classify_strategy_router_model(model, expected):
     ],
 )
 def test_validate_rejects_incoherent_writes(model, present_fields, expected_fragment):
-    violation = validate_strategy_router_model_write(model=model, present_fields=present_fields)
+    violation = validate_strategy_router_model_write(
+        model=model, present_fields=present_fields, complexity_router_config=None
+    )
     assert violation is not None
     assert expected_fragment in violation
 
@@ -74,4 +76,80 @@ def test_validate_rejects_incoherent_writes(model, present_fields, expected_frag
     ],
 )
 def test_validate_accepts_coherent_writes(model, present_fields):
-    assert validate_strategy_router_model_write(model=model, present_fields=present_fields) is None
+    assert (
+        validate_strategy_router_model_write(
+            model=model, present_fields=present_fields, complexity_router_config=None
+        )
+        is None
+    )
+
+
+VALID_TIERS = {
+    "SIMPLE": ["gpt-4o-mini"],
+    "MEDIUM": ["gpt-4o-mini"],
+    "COMPLEX": ["gpt-4o"],
+    "REASONING": ["gpt-4o"],
+}
+
+
+@pytest.mark.parametrize(
+    "keyword_tier_rules,expected_fragment",
+    [
+        ([{"keywords": [], "tier": "COMPLEX"}], "at least 1 item"),
+        ([{"keywords": ["   "], "tier": "COMPLEX"}], "non-empty keyword"),
+        (
+            [{"keywords": ["invoice"], "tier": "MEDIUM"}, {"keywords": [], "tier": "COMPLEX"}],
+            "at least 1 item",
+        ),
+    ],
+)
+def test_validate_rejects_unloadable_complexity_config(keyword_tier_rules, expected_fragment):
+    """A rule with no keyword makes ComplexityRouterConfig unbuildable, so the row must never be
+    written: without this the deployment is persisted, dropped at load, and the caller gets a 500."""
+    violation = validate_strategy_router_model_write(
+        model="auto_router/complexity_router",
+        present_fields=COMPLEXITY_FIELDS,
+        complexity_router_config={
+            "tiers": VALID_TIERS,
+            "classifier_type": "heuristic",
+            "keyword_tier_rules": keyword_tier_rules,
+        },
+    )
+    assert violation is not None
+    assert "complexity_router_config is invalid" in violation
+    assert expected_fragment in violation
+
+
+@pytest.mark.parametrize(
+    "complexity_router_config",
+    [
+        {"tiers": VALID_TIERS, "classifier_type": "heuristic"},
+        {
+            "tiers": VALID_TIERS,
+            "classifier_type": "heuristic",
+            "keyword_tier_rules": [{"keywords": ["invoice", "refund"], "tier": "MEDIUM"}],
+        },
+        # extra="allow" on the model, so an unrecognised key is not this gate's business
+        {"tiers": VALID_TIERS, "classifier_type": "heuristic", "some_future_key": "value"},
+    ],
+)
+def test_validate_accepts_loadable_complexity_config(complexity_router_config):
+    assert (
+        validate_strategy_router_model_write(
+            model="auto_router/complexity_router",
+            present_fields=COMPLEXITY_FIELDS,
+            complexity_router_config=complexity_router_config,
+        )
+        is None
+    )
+
+
+def test_validate_reports_missing_fields_before_reading_the_config():
+    """Field-shape violations outrank content, so a caller fixes the structural problem first."""
+    violation = validate_strategy_router_model_write(
+        model="auto_router/complexity_router",
+        present_fields=frozenset(),
+        complexity_router_config={"keyword_tier_rules": [{"keywords": [], "tier": "COMPLEX"}]},
+    )
+    assert violation is not None
+    assert "requires" in violation
